@@ -9,6 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -23,7 +26,13 @@ type CohereResponse struct {
 	} `json:"generations"`
 }
 
-// Funcion para establecer coneccion con la BDD
+type Producto struct {
+	UserID   int64  `json:"user_id"`
+	Producto string `json:"producto"`
+	Cantidad int    `json:"cantidad"`
+}
+
+// Función para establecer conexión con la BDD
 func connectToDB() *pgx.Conn {
 	log.Printf("Conectando a la base de datos: %s", os.Getenv("DATABASE_URL"))
 
@@ -39,28 +48,52 @@ func connectToDB() *pgx.Conn {
 }
 
 func agregarAlStock(conn *pgx.Conn, userID int64, producto string, cantidad int) error {
-	_, err := conn.Exec(context.Background(),
-		"INSERT INTO stock (user_id, producto, cantidad) VALUES ($1, $2, $3)", userID, producto, cantidad)
+	var currentQuantity int
+	err := conn.QueryRow(context.Background(),
+		"SELECT cantidad FROM stock WHERE user_id = $1 AND producto = $2", userID, producto).Scan(&currentQuantity)
+
 	if err != nil {
-		return fmt.Errorf("error al agregar al stock: %v", err)
+		if err == pgx.ErrNoRows {
+			_, err = conn.Exec(context.Background(),
+				"INSERT INTO stock (user_id, producto, cantidad) VALUES ($1, $2, $3)", userID, producto, cantidad)
+			if err != nil {
+				log.Printf("Error al agregar nuevo producto: %v", err)
+				return fmt.Errorf("error al agregar al stock: %v", err)
+			}
+			log.Printf("Producto '%s' agregado al stock por el usuario %d.", producto, userID)
+		} else {
+			log.Printf("Error al consultar el stock: %v", err)
+			return fmt.Errorf("error al consultar el stock: %v", err)
+		}
+	} else {
+		newQuantity := currentQuantity + cantidad
+		_, err = conn.Exec(context.Background(),
+			"UPDATE stock SET cantidad = $1 WHERE user_id = $2 AND producto = $3", newQuantity, userID, producto)
+		if err != nil {
+			log.Printf("Error al actualizar el producto: %v", err)
+			return fmt.Errorf("error al actualizar el stock: %v", err)
+		}
+		log.Printf("Producto '%s' actualizado. Nueva cantidad: %d para el usuario %d.", producto, newQuantity, userID)
 	}
 	return nil
 }
 
-// Función para conectarse a la API de Cohere y obtener una respuesta
 func getCohereResponse(prompt, apiKey string) string {
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 	}
 
-	// Cuerpo de la petición a Cohere
-	requestBody, _ := json.Marshal(map[string]interface{}{
-		"model":      "command-xlarge-nightly", // Modelo de generación de Cohere
+	// Modificar el prompt para limitar la respuesta al contexto del stock
+	requestBody, err := json.Marshal(map[string]interface{}{
+		"model":      "command-xlarge-nightly",
 		"prompt":     prompt,
-		"max_tokens": 100, // Puedes ajustar el número de tokens según tu necesidad
+		"max_tokens": 100,
 	})
+	if err != nil {
+		log.Printf("Error al crear el cuerpo de la petición: %v", err)
+		return "Hubo un error al procesar tu solicitud."
+	}
 
-	// Hacer la solicitud HTTP a Cohere
 	req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/generate", bytes.NewBuffer(requestBody))
 	if err != nil {
 		log.Printf("Error creando la solicitud a Cohere: %v", err.Error())
@@ -77,14 +110,12 @@ func getCohereResponse(prompt, apiKey string) string {
 	}
 	defer resp.Body.Close()
 
-	// Verificar si la respuesta no es 200
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
 		log.Printf("Error en la respuesta de Cohere: %s", string(body))
 		return "Error al recibir una respuesta válida de Cohere."
 	}
 
-	// Procesar la respuesta JSON
 	var cohereResponse CohereResponse
 	err = json.NewDecoder(resp.Body).Decode(&cohereResponse)
 	if err != nil {
@@ -100,13 +131,11 @@ func getCohereResponse(prompt, apiKey string) string {
 }
 
 func main() {
-	// Cargar archivo .env
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error al cargar archivo .env")
 	}
 
-	// Cargar las variables de entorno
 	telegramBotToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	cohereApiKey := os.Getenv("COHERE_API_KEY")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -115,11 +144,9 @@ func main() {
 		log.Fatal("Asegúrate de establecer TELEGRAM_BOT_TOKEN, COHERE_API_KEY y DATABASE_URL en tu entorno.")
 	}
 
-	// Conectar a la base de datos
 	conn := connectToDB()
 	defer conn.Close(context.Background())
 
-	// Iniciar el bot de Telegram
 	bot, err := tgbotapi.NewBotAPI(telegramBotToken)
 	if err != nil {
 		log.Panic(err.Error())
@@ -133,31 +160,62 @@ func main() {
 
 	updates := bot.GetUpdatesChan(u)
 
-	// Escuchar mensajes de Telegram
+	synonyms := map[string]string{
+		"agregame": "agregar",
+		"añadime":  "agregar",
+		"añadir":   "agregar",
+		"sumar":    "agregar",
+		"quitar":   "quitar",
+		"eliminar": "quitar",
+		"borrar":   "quitar",
+	}
+
 	for update := range updates {
 		if update.Message == nil {
 			continue
 		}
 
 		userMessage := update.Message.Text
-		log.Printf("[%s] %s", update.Message.From.UserName, userMessage)
+		userMessageLower := strings.ToLower(userMessage)
+		re := regexp.MustCompile(`(?i)(agregar|quitar)\s*(\d+)?\s*(.*)`)
+		matches := re.FindStringSubmatch(userMessageLower)
 
-		// Obtener respuesta de Cohere
-		aiResponse := getCohereResponse(userMessage, cohereApiKey)
+		userID := update.Message.From.ID
 
-		// Obtener el user_id del mensaje
-		userID := update.Message.From.ID // Capturar el user_id
+		if len(matches) > 0 {
+			action := matches[1]
+			quantityStr := matches[2]
+			product := matches[3]
 
-		// Agregar al stock, aquí puedes agregar lógica para extraer el producto y la cantidad de aiResponse
-		// Por ejemplo, podrías analizar el mensaje del usuario para determinar qué agregar
-		// Aquí se usa "leche" y cantidad 3 como ejemplo
-		if err := agregarAlStock(conn, userID, "leche", 3); err != nil {
-			log.Printf("Error al agregar al stock: %v", err)
+			if standardAction, exists := synonyms[action]; exists {
+				action = standardAction
+			}
+
+			if action == "agregar" {
+				quantity := 1
+				if quantityStr != "" {
+					quantity, err = strconv.Atoi(quantityStr)
+					if err != nil {
+						bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Por favor, proporciona una cantidad válida."))
+						continue
+					}
+				}
+
+				err := agregarAlStock(conn, userID, product, quantity)
+				if err != nil {
+					bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al agregar al stock."))
+				} else {
+					bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Se ha agregado %d %s al stock.", quantity, product)))
+				}
+			} else if action == "quitar" {
+				// Implementar lógica para quitar productos
+			}
+
+		} else {
+			// Aquí se puede usar Cohere para responder, pero limitando la respuesta al stock
+			coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Responde como un bot que solo maneja stock de productos.", userMessage)
+			cohereResponse := getCohereResponse(coherePrompt, cohereApiKey)
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, cohereResponse))
 		}
-
-		// Enviar la respuesta al usuario en Telegram
-		reply := tgbotapi.NewMessage(update.Message.Chat.ID, aiResponse)
-		bot.Send(reply)
 	}
-
 }
