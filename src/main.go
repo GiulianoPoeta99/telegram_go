@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/joho/godotenv"
 )
 
@@ -18,6 +21,30 @@ type CohereResponse struct {
 	Generations []struct {
 		Text string `json:"text"`
 	} `json:"generations"`
+}
+
+// Funcion para establecer coneccion con la BDD
+func connectToDB() *pgx.Conn {
+	log.Printf("Conectando a la base de datos: %s", os.Getenv("DATABASE_URL"))
+
+	config, err := pgx.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("No se pudo parsear la URL de la base de datos: %v", err)
+	}
+	conn, err := pgx.ConnectConfig(context.Background(), config)
+	if err != nil {
+		log.Fatalf("No se pudo conectar a la base de datos: %v", err)
+	}
+	return conn
+}
+
+func agregarAlStock(conn *pgx.Conn, userID int64, producto string, cantidad int) error {
+	_, err := conn.Exec(context.Background(),
+		"INSERT INTO stock (user_id, producto, cantidad) VALUES ($1, $2, $3)", userID, producto, cantidad)
+	if err != nil {
+		return fmt.Errorf("error al agregar al stock: %v", err)
+	}
+	return nil
 }
 
 // Función para conectarse a la API de Cohere y obtener una respuesta
@@ -82,10 +109,15 @@ func main() {
 	// Cargar las variables de entorno
 	telegramBotToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	cohereApiKey := os.Getenv("COHERE_API_KEY")
+	databaseURL := os.Getenv("DATABASE_URL")
 
-	if telegramBotToken == "" || cohereApiKey == "" {
-		log.Fatal("Asegúrate de establecer TELEGRAM_BOT_TOKEN y COHERE_API_KEY en tu entorno.")
+	if telegramBotToken == "" || cohereApiKey == "" || databaseURL == "" {
+		log.Fatal("Asegúrate de establecer TELEGRAM_BOT_TOKEN, COHERE_API_KEY y DATABASE_URL en tu entorno.")
 	}
+
+	// Conectar a la base de datos
+	conn := connectToDB()
+	defer conn.Close(context.Background())
 
 	// Iniciar el bot de Telegram
 	bot, err := tgbotapi.NewBotAPI(telegramBotToken)
@@ -113,8 +145,19 @@ func main() {
 		// Obtener respuesta de Cohere
 		aiResponse := getCohereResponse(userMessage, cohereApiKey)
 
+		// Obtener el user_id del mensaje
+		userID := update.Message.From.ID // Capturar el user_id
+
+		// Agregar al stock, aquí puedes agregar lógica para extraer el producto y la cantidad de aiResponse
+		// Por ejemplo, podrías analizar el mensaje del usuario para determinar qué agregar
+		// Aquí se usa "leche" y cantidad 3 como ejemplo
+		if err := agregarAlStock(conn, userID, "leche", 3); err != nil {
+			log.Printf("Error al agregar al stock: %v", err)
+		}
+
 		// Enviar la respuesta al usuario en Telegram
 		reply := tgbotapi.NewMessage(update.Message.Chat.ID, aiResponse)
 		bot.Send(reply)
 	}
+
 }
