@@ -1,50 +1,25 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/GiulianoPoeta99/telegram_go.git/src/IA"
+	"github.com/GiulianoPoeta99/telegram_go.git/src/db"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/jackc/pgx/v4"
 	"github.com/joho/godotenv"
 )
 
-// Estructura para la respuesta de Cohere
-type CohereResponse struct {
-	Generations []struct {
-		Text string `json:"text"`
-	} `json:"generations"`
-}
-
 type Producto struct {
 	UserID   int64  `json:"user_id"`
 	Producto string `json:"producto"`
 	Cantidad int    `json:"cantidad"`
-}
-
-// Función para establecer conexión con la BDD
-func connectToDB() *pgx.Conn {
-	log.Printf("Conectando a la base de datos: %s", os.Getenv("DATABASE_URL"))
-
-	config, err := pgx.ParseConfig(os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatalf("No se pudo parsear la URL de la base de datos: %v", err)
-	}
-	conn, err := pgx.ConnectConfig(context.Background(), config)
-	if err != nil {
-		log.Fatalf("No se pudo conectar a la base de datos: %v", err)
-	}
-	return conn
 }
 
 func agregarAlStock(conn *pgx.Conn, userID int64, producto string, cantidad int) error {
@@ -78,58 +53,6 @@ func agregarAlStock(conn *pgx.Conn, userID int64, producto string, cantidad int)
 	return nil
 }
 
-func getCohereResponse(prompt, apiKey string) string {
-	client := &http.Client{
-		Timeout: 60 * time.Second,
-	}
-
-	// Modificar el prompt para limitar la respuesta al contexto del stock
-	requestBody, err := json.Marshal(map[string]interface{}{
-		"model":      "command-xlarge-nightly",
-		"prompt":     prompt,
-		"max_tokens": 100,
-	})
-	if err != nil {
-		log.Printf("Error al crear el cuerpo de la petición: %v", err)
-		return "Hubo un error al procesar tu solicitud."
-	}
-
-	req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/generate", bytes.NewBuffer(requestBody))
-	if err != nil {
-		log.Printf("Error creando la solicitud a Cohere: %v", err.Error())
-		return "Hubo un error al procesar tu solicitud."
-	}
-
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Error en la solicitud a Cohere: %v", err.Error())
-		return "Hubo un error al procesar tu solicitud."
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		log.Printf("Error en la respuesta de Cohere: %s", string(body))
-		return "Error al recibir una respuesta válida de Cohere."
-	}
-
-	var cohereResponse CohereResponse
-	err = json.NewDecoder(resp.Body).Decode(&cohereResponse)
-	if err != nil {
-		log.Printf("Error al procesar el JSON: %v", err)
-		return "Hubo un error al entender la respuesta de Cohere."
-	}
-
-	if len(cohereResponse.Generations) > 0 {
-		return cohereResponse.Generations[0].Text
-	}
-
-	return "No recibí ninguna respuesta de Cohere."
-}
-
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -144,7 +67,7 @@ func main() {
 		log.Fatal("Asegúrate de establecer TELEGRAM_BOT_TOKEN, COHERE_API_KEY y DATABASE_URL en tu entorno.")
 	}
 
-	conn := connectToDB()
+	conn := db.ConnectToDB()
 	defer conn.Close(context.Background())
 
 	bot, err := tgbotapi.NewBotAPI(telegramBotToken)
@@ -214,7 +137,7 @@ func main() {
 		} else {
 			// Aquí se puede usar Cohere para responder, pero limitando la respuesta al stock
 			coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Responde como un bot que le maneja un stock de productos unico a ese usuario especifico. Debes dar respuestas cortas y concisas", userMessage)
-			cohereResponse := getCohereResponse(coherePrompt, cohereApiKey)
+			cohereResponse := IA.GetCohereResponse(coherePrompt, cohereApiKey)
 			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, cohereResponse))
 		}
 	}
