@@ -213,7 +213,7 @@ func main() {
 
 		} else {
 			// Aquí se puede usar Cohere para responder, pero limitando la respuesta al stock
-			coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Responde como un bot que solo maneja stock de productos.", userMessage)
+			coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Responde como un bot que le maneja un stock de productos unico a ese usuario especifico. Debes dar respuestas cortas y concisas", userMessage)
 			cohereResponse := getCohereResponse(coherePrompt, cohereApiKey)
 			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, cohereResponse))
 		}
