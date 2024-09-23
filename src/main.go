@@ -22,6 +22,42 @@ type Producto struct {
 	Cantidad int    `json:"cantidad"`
 }
 
+func generarArchivoStock(conn *pgx.Conn, userID int64) (string, error) {
+	// Consulta el stock del usuario
+	rows, err := conn.Query(context.Background(),
+		"SELECT producto, cantidad FROM stock WHERE user_id = $1", userID)
+	if err != nil {
+		return "", fmt.Errorf("error al consultar el stock: %v", err)
+	}
+	defer rows.Close()
+
+	// Crear archivo temporal
+	fileName := fmt.Sprintf("stock_%d.txt", userID)
+	file, err := os.Create(fileName)
+	if err != nil {
+		return "", fmt.Errorf("error al crear archivo: %v", err)
+	}
+	defer file.Close()
+
+	// Escribir el stock en el archivo
+	for rows.Next() {
+		var producto string
+		var cantidad int
+		err := rows.Scan(&producto, &cantidad)
+		if err != nil {
+			return "", fmt.Errorf("error al leer fila: %v", err)
+		}
+		file.WriteString(fmt.Sprintf("%s: %d\n", producto, cantidad))
+	}
+
+	// Verificar si hubo errores en la iteración de filas
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("error en la iteración de filas: %v", err)
+	}
+
+	return fileName, nil
+}
+
 func agregarAlStock(conn *pgx.Conn, userID int64, producto string, cantidad int) error {
 	var currentQuantity int
 	err := conn.QueryRow(context.Background(),
@@ -104,6 +140,42 @@ func main() {
 		matches := re.FindStringSubmatch(userMessageLower)
 
 		userID := update.Message.From.ID
+
+		if strings.ToLower(userMessage) == "enviar archivo stock" {
+			fileName, err := generarArchivoStock(conn, userID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al generar el archivo del stock."))
+				continue
+			}
+
+			// Abrir el archivo para enviarlo
+			file, err := os.Open(fileName)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al abrir el archivo."))
+				continue
+			}
+
+			// Enviar el archivo al usuario
+			msg := tgbotapi.NewDocument(update.Message.Chat.ID, tgbotapi.FileReader{
+				Name:   fileName,
+				Reader: file,
+			})
+			if _, err := bot.Send(msg); err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al enviar el archivo."))
+			}
+
+			// Cerrar el archivo manualmente después de enviarlo
+			err = file.Close()
+			if err != nil {
+				log.Printf("Error al cerrar el archivo: %v", err)
+			}
+
+			// Eliminar el archivo después de enviarlo para evitar acumulación
+			err = os.Remove(fileName)
+			if err != nil {
+				log.Printf("Error al eliminar el archivo: %v", err)
+			}
+		}
 
 		if len(matches) > 0 {
 			action := matches[1]
