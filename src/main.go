@@ -16,6 +16,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Video flipendo : https://www.youtube.com/watch?v=h2AIlBsMkxo
+
 type Producto struct {
 	UserID   int64  `json:"user_id"`
 	Producto string `json:"producto"`
@@ -175,6 +177,37 @@ func main() {
 			if err != nil {
 				log.Printf("Error al eliminar el archivo: %v", err)
 			}
+
+			continue
+		}
+
+		if userMessage == "flipo" {
+			// Ruta a la imagen específica
+			imagePath := "src/assets/flipo.png"
+
+			// Abrir la imagen
+			file, err := os.Open(imagePath)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "No se pudo abrir la imagen."))
+				log.Printf("Error al abrir la imagen: %v", err)
+				continue
+			}
+
+			// Enviar la imagen al usuario
+			msg := tgbotapi.NewPhoto(update.Message.Chat.ID, tgbotapi.FileReader{
+				Name:   "flipo.png",
+				Reader: file,
+			})
+
+			if _, err := bot.Send(msg); err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al enviar la imagen."))
+				log.Printf("Error al enviar la imagen: %v", err)
+			}
+
+			// Cerrar el archivo explícitamente después de usarlo
+			file.Close()
+
+			continue
 		}
 
 		if len(matches) > 0 {
