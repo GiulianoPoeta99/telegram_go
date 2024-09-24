@@ -33,9 +33,9 @@ func generarArchivoStock(conn *pgx.Conn, userID int64) (string, error) {
 	}
 	defer rows.Close()
 
-	// Crear archivo temporal
+	// Crear archivo temporal (sobrescribiendo si ya existe)
 	fileName := fmt.Sprintf("stock_%d.txt", userID)
-	file, err := os.Create(fileName)
+	file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return "", fmt.Errorf("error al crear archivo: %v", err)
 	}
@@ -166,12 +166,6 @@ func main() {
 				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al enviar el archivo."))
 			}
 
-			// Cerrar el archivo manualmente después de enviarlo
-			err = file.Close()
-			if err != nil {
-				log.Printf("Error al cerrar el archivo: %v", err)
-			}
-
 			// Eliminar el archivo después de enviarlo para evitar acumulación
 			err = os.Remove(fileName)
 			if err != nil {
@@ -188,7 +182,6 @@ func main() {
 			// Abrir la imagen
 			file, err := os.Open(imagePath)
 			if err != nil {
-				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "No se pudo abrir la imagen."))
 				log.Printf("Error al abrir la imagen: %v", err)
 				continue
 			}
