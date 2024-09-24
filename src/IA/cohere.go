@@ -3,8 +3,8 @@ package IA
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"time"
 )
@@ -16,26 +16,30 @@ type CohereResponse struct {
 	} `json:"generations"`
 }
 
-func GetCohereResponse(prompt, apiKey string) string {
+type CohereJSONResponse struct {
+	Accion   string `json:"accion"`
+	Producto string `json:"producto"`
+	Cantidad int    `json:"cantidad"`
+}
+
+func GetCohereResponse(prompt, apiKey string) (CohereJSONResponse, error) {
+	var response CohereJSONResponse
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 	}
 
-	// Modificar el prompt para limitar la respuesta al contexto del stock
 	requestBody, err := json.Marshal(map[string]interface{}{
 		"model":      "command-xlarge-nightly",
 		"prompt":     prompt,
 		"max_tokens": 100,
 	})
 	if err != nil {
-		log.Printf("Error al crear el cuerpo de la petición: %v", err)
-		return "Hubo un error al procesar tu solicitud."
+		return response, err
 	}
 
 	req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/generate", bytes.NewBuffer(requestBody))
 	if err != nil {
-		log.Printf("Error creando la solicitud a Cohere: %v", err.Error())
-		return "Hubo un error al procesar tu solicitud."
+		return response, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -43,27 +47,28 @@ func GetCohereResponse(prompt, apiKey string) string {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error en la solicitud a Cohere: %v", err.Error())
-		return "Hubo un error al procesar tu solicitud."
+		return response, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		log.Printf("Error en la respuesta de Cohere: %s", string(body))
-		return "Error al recibir una respuesta válida de Cohere."
+		return response, fmt.Errorf("Error en la respuesta de Cohere: %s", string(body))
 	}
 
 	var cohereResponse CohereResponse
 	err = json.NewDecoder(resp.Body).Decode(&cohereResponse)
 	if err != nil {
-		log.Printf("Error al procesar el JSON: %v", err)
-		return "Hubo un error al entender la respuesta de Cohere."
+		return response, err
 	}
 
 	if len(cohereResponse.Generations) > 0 {
-		return cohereResponse.Generations[0].Text
+		// Aquí intentamos decodificar el texto generado como JSON
+		err := json.Unmarshal([]byte(cohereResponse.Generations[0].Text), &response)
+		if err != nil {
+			return response, fmt.Errorf("Error al parsear el JSON: %v", err)
+		}
 	}
 
-	return "No recibí ninguna respuesta de Cohere."
+	return response, nil
 }

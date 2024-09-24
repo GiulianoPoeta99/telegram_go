@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
-	"strconv"
-	"strings"
 
 	"github.com/GiulianoPoeta99/telegram_go.git/src/IA"
 	"github.com/GiulianoPoeta99/telegram_go.git/src/db"
@@ -15,8 +12,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
 )
-
-// Video flipendo : https://www.youtube.com/watch?v=h2AIlBsMkxo
 
 func main() {
 	err := godotenv.Load()
@@ -48,59 +43,13 @@ func main() {
 
 	updates := bot.GetUpdatesChan(u)
 
-	synonyms := map[string]string{
-		"agregame": "agregar",
-		"añadime":  "agregar",
-		"añadir":   "agregar",
-		"sumar":    "agregar",
-		"quitar":   "quitar",
-		"eliminar": "quitar",
-		"borrar":   "quitar",
-	}
-
 	for update := range updates {
 		if update.Message == nil {
 			continue
 		}
 
 		userMessage := update.Message.Text
-		userMessageLower := strings.ToLower(userMessage)
-		re := regexp.MustCompile(`(?i)(agregar|quitar)\s*(\d+)?\s*(.*)`)
-		matches := re.FindStringSubmatch(userMessageLower)
-
 		userID := update.Message.From.ID
-
-		if strings.ToLower(userMessage) == "enviar archivo stock" {
-			fileName, err := stock.GenerarArchivoStock(conn, userID)
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al generar el archivo del stock."))
-				continue
-			}
-
-			// Abrir el archivo para enviarlo
-			file, err := os.Open(fileName)
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al abrir el archivo."))
-				continue
-			}
-
-			// Enviar el archivo al usuario
-			msg := tgbotapi.NewDocument(update.Message.Chat.ID, tgbotapi.FileReader{
-				Name:   fileName,
-				Reader: file,
-			})
-			if _, err := bot.Send(msg); err != nil {
-				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al enviar el archivo."))
-			}
-
-			// Eliminar el archivo después de enviarlo para evitar acumulación
-			err = os.Remove(fileName)
-			if err != nil {
-				log.Printf("Error al eliminar el archivo: %v", err)
-			}
-
-			continue
-		}
 
 		if userMessage == "flipo" {
 			// Ruta a la imagen específica
@@ -130,40 +79,57 @@ func main() {
 			continue
 		}
 
-		if len(matches) > 0 {
-			action := matches[1]
-			quantityStr := matches[2]
-			product := matches[3]
+		coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Interpreta este mensaje y devuelve una estructura JSON clara con las claves 'accion', 'producto' y 'cantidad'. Las acciones válidas son 'agregar', 'quitar', 'actualizar' o 'enviar archivo stock'. Si no puedes interpretar el mensaje, responde 'accion': 'desconocida'.", userMessage)
+		cohereResponse, err := IA.GetCohereResponse(coherePrompt, cohereApiKey)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al procesar tu solicitud."))
+			continue
+		}
 
-			if standardAction, exists := synonyms[action]; exists {
-				action = standardAction
+		switch cohereResponse.Accion {
+		case "agregar":
+			err := stock.AgregarAlStock(conn, userID, cohereResponse.Producto, cohereResponse.Cantidad)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al agregar al stock."))
+			} else {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Se ha agregado %d %s al stock.", cohereResponse.Cantidad, cohereResponse.Producto)))
+			}
+		case "quitar":
+			// Implementar lógica para quitar productos
+		case "actualizar":
+			// Implementar lógica para actualizar productos
+		case "enviar archivo stock":
+			fileName, err := stock.GenerarArchivoStock(conn, userID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al generar el archivo del stock."))
+				continue
 			}
 
-			if action == "agregar" {
-				quantity := 1
-				if quantityStr != "" {
-					quantity, err = strconv.Atoi(quantityStr)
-					if err != nil {
-						bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Por favor, proporciona una cantidad válida."))
-						continue
-					}
-				}
-
-				err := stock.AgregarAlStock(conn, userID, product, quantity)
-				if err != nil {
-					bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al agregar al stock."))
-				} else {
-					bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Se ha agregado %d %s al stock.", quantity, product)))
-				}
-			} else if action == "quitar" {
-				// Implementar lógica para quitar productos
+			// Abrir el archivo para enviarlo
+			file, err := os.Open(fileName)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al abrir el archivo."))
+				continue
 			}
 
-		} else {
-			// Aquí se puede usar Cohere para responder, pero limitando la respuesta al stock
-			coherePrompt := fmt.Sprintf("El usuario dice: '%s'. Responde como un bot que le maneja un stock de productos unico a ese usuario especifico. Debes dar respuestas cortas y concisas", userMessage)
-			cohereResponse := IA.GetCohereResponse(coherePrompt, cohereApiKey)
-			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, cohereResponse))
+			// Enviar el archivo al usuario
+			msg := tgbotapi.NewDocument(update.Message.Chat.ID, tgbotapi.FileReader{
+				Name:   fileName,
+				Reader: file,
+			})
+			if _, err := bot.Send(msg); err != nil {
+				bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hubo un error al enviar el archivo."))
+			}
+
+			// Eliminar el archivo después de enviarlo para evitar acumulación
+			err = os.Remove(fileName)
+			if err != nil {
+				log.Printf("Error al eliminar el archivo: %v", err)
+			}
+
+		default:
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Hola! Soy SHObot, el bot para manejar tu stock. Puedes pedirme que: "))
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Agregue, actualice o quite articulos de tu stock. Ademas puedo enviarte un archivo con tus productos actuales"))
 		}
 	}
 }
